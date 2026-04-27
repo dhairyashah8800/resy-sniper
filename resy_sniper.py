@@ -20,10 +20,10 @@ BASE_URL = "https://api.resy.com"
 TELEGRAM_API = "https://api.telegram.org"
 EASTERN = ZoneInfo("America/New_York")
 
-DROP_HOUR, DROP_MIN, DROP_SEC = 10, 59, 50  # Eastern — Bungalow opens at 11:00
+DROP_HOUR, DROP_MIN, DROP_SEC = 10, 59, 50  # ET — aggressive mode start
 DROP_DURATION = 180   # seconds of aggressive polling (3 min)
 DROP_INTERVAL = 2     # seconds between polls in aggressive mode
-CHUNK_SLEEP = 10      # seconds per chunk during interruptible inter-cycle sleep
+POLL_CLOSE_HOUR, POLL_CLOSE_MIN = 12, 0   # ET — Bungalow stops polling at noon
 
 # ── ENV vars ──────────────────────────────────────────────────────────────────
 def _require_env(name: str) -> str:
@@ -372,6 +372,13 @@ def run_drop_sniper(target: VenueTarget, dates: list[str], budget: float) -> boo
 
 
 # ── Per-venue polling loop ────────────────────────────────────────────────────
+def _secs_to_poll_close(now_et: datetime) -> float:
+    """Seconds until today's noon ET cutoff. Negative if already past noon."""
+    close = now_et.replace(hour=POLL_CLOSE_HOUR, minute=POLL_CLOSE_MIN,
+                           second=0, microsecond=0)
+    return (close - now_et).total_seconds()
+
+
 def run_target(target: VenueTarget) -> None:
     """Runs until a reservation is booked. Designed for its own daemon thread."""
     tag = target.name
@@ -381,39 +388,49 @@ def run_target(target: VenueTarget) -> None:
     log.info(
         f"[{tag}] Starting — venue {target.venue_id}, party {target.party_size}, "
         f"{len(dates)} dates"
-        + (f", drop-sniper at {DROP_HOUR:02d}:{DROP_MIN:02d}:{DROP_SEC:02d} ET"
-           if target.drop_sniper else "")
+        + (f", polling window 10:59:50–12:00 ET daily" if target.drop_sniper else "")
     )
 
     while True:
-        # ── Drop sniper gate (Bungalow only) ──────────────────────────────────
+        # ── Bungalow schedule gate ────────────────────────────────────────────
         if target.drop_sniper:
             now_et = datetime.now(EASTERN)
-            to_start, to_end = _drop_window_bounds(now_et)
+            to_drop_start, to_drop_end = _drop_window_bounds(now_et)
+            to_close = _secs_to_poll_close(now_et)
 
-            if to_end > 0 and to_start <= 0:
-                # Inside the window
-                if run_drop_sniper(target, dates, to_end):
+            # Past noon — sleep until tomorrow's drop open
+            if to_close <= 0:
+                tomorrow_open = (now_et + timedelta(days=1)).replace(
+                    hour=DROP_HOUR, minute=DROP_MIN, second=DROP_SEC, microsecond=0
+                )
+                sleep_secs = (tomorrow_open - now_et).total_seconds()
+                log.info(
+                    f"[{tag}] Poll window closed — sleeping "
+                    f"{sleep_secs / 3600:.1f}h until 10:59:50 ET tomorrow"
+                )
+                time.sleep(max(1.0, sleep_secs))
+                continue
+
+            # Before 10:59:50 — sleep until drop window opens
+            if to_drop_start > 0:
+                log.info(f"[{tag}] Sleeping {to_drop_start:.0f}s until 10:59:50 ET")
+                time.sleep(max(0.5, to_drop_start - 0.5))
+                continue
+
+            # Inside drop window (10:59:50 → ~11:03) — aggressive mode
+            if to_drop_end > 0:
+                if run_drop_sniper(target, dates, to_drop_end):
                     return
-                time.sleep(5)
-                continue
+                continue  # drop ended; re-evaluate at top → normal polling
 
-            if 0 < to_start <= target.poll_interval:
-                # Window opens within this cycle — sleep until it starts
-                log.info(f"[{tag}] Drop window in {to_start:.0f}s — waiting")
-                time.sleep(max(0.5, to_start - 0.5))
-                continue
+            # Between ~11:03 and noon — fall through to normal polling below
 
         # ── Normal polling cycle ──────────────────────────────────────────────
-        entered_drop = False
         for day in dates:
-            # Mid-cycle drop window check so we don't miss the open by a full cycle
-            if target.drop_sniper:
-                now_et = datetime.now(EASTERN)
-                to_start, to_end = _drop_window_bounds(now_et)
-                if to_end > 0 and to_start <= 0:
-                    entered_drop = True
-                    break
+            # Bungalow: stop mid-cycle if noon has arrived
+            if target.drop_sniper and _secs_to_poll_close(datetime.now(EASTERN)) <= 0:
+                log.info(f"[{tag}] 12:00 ET reached — stopping until tomorrow")
+                break
 
             if backoff:
                 log.warning(f"[{tag}] Rate-limited — sleeping {backoff}s")
@@ -453,23 +470,16 @@ def run_target(target: VenueTarget) -> None:
             log.info(f"[{tag}] All slots on {day} exhausted")
             time.sleep(1)
 
-        if entered_drop:
-            continue  # Jump back to top to enter drop gate immediately
-
-        # ── Inter-cycle sleep — chunked for Bungalow so drop gate fires fast ─
-        log.info(f"[{tag}] Cycle complete — sleeping {target.poll_interval}s")
+        # ── Inter-cycle sleep ─────────────────────────────────────────────────
         if target.drop_sniper:
-            end_sleep = time.monotonic() + target.poll_interval
-            while time.monotonic() < end_sleep:
-                remaining = end_sleep - time.monotonic()
-                if remaining <= 0:
-                    break
-                time.sleep(min(CHUNK_SLEEP, remaining))
-                now_et = datetime.now(EASTERN)
-                to_start, to_end = _drop_window_bounds(now_et)
-                if to_end > 0 and to_start <= 0:
-                    break  # Drop window opened — exit sleep early
+            remaining = _secs_to_poll_close(datetime.now(EASTERN))
+            if remaining <= 0:
+                continue  # noon passed; outer loop handles the long sleep
+            sleep_secs = min(target.poll_interval, remaining)
+            log.info(f"[{tag}] Cycle complete — sleeping {sleep_secs:.0f}s")
+            time.sleep(sleep_secs)
         else:
+            log.info(f"[{tag}] Cycle complete — sleeping {target.poll_interval}s")
             time.sleep(target.poll_interval)
 
 
