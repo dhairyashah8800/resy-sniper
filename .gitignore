@@ -1,0 +1,27 @@
+# Environment and credentials — never commit these
+.env
+.env.local
+*.env
+*credentials*
+*secret*
+*token*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
