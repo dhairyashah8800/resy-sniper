@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -163,6 +164,7 @@ def find_slots(day: str, venue_id: int, party_size: int) -> Optional[list]:
     if resp.status_code == 429:
         return None
     if resp.status_code >= 500:
+        log.warning(f"  /4/find HTTP {resp.status_code}: {resp.text[:300]}")
         raise ServerError(f"HTTP {resp.status_code}")
     resp.raise_for_status()
     data = resp.json()
@@ -384,6 +386,7 @@ def run_target(target: VenueTarget) -> None:
     tag = target.name
     dates = target.dates()
     backoff = 0
+    consec_500 = 0  # consecutive server errors; drives progressive sleep
 
     log.info(
         f"[{tag}] Starting — venue {target.venue_id}, party {target.party_size}, "
@@ -441,8 +444,12 @@ def run_target(target: VenueTarget) -> None:
             try:
                 slots = find_slots(day, target.venue_id, target.party_size)
             except ServerError as exc:
-                log.warning(f"[{tag}] Server error ({exc}) — sleeping 60s")
-                time.sleep(60)
+                consec_500 += 1
+                sleep_secs = min(60 * (2 ** (consec_500 - 1)), 600)
+                log.warning(
+                    f"[{tag}] Server error #{consec_500} ({exc}) — sleeping {sleep_secs}s"
+                )
+                time.sleep(sleep_secs)
                 continue
             except requests.RequestException as exc:
                 log.error(f"[{tag}] Network error: {exc}")
@@ -453,11 +460,12 @@ def run_target(target: VenueTarget) -> None:
                 backoff = min((backoff or 30) * 2, 300)
                 continue
 
+            consec_500 = 0
             backoff = 0
 
             if not slots:
                 log.info(f"[{tag}] No slots on {day}")
-                time.sleep(1)
+                time.sleep(random.uniform(0.5, 2.5))
                 continue
 
             log.info(f"[{tag}] {len(slots)} slot(s) on {day} — attempting!")
@@ -468,19 +476,21 @@ def run_target(target: VenueTarget) -> None:
                 return
 
             log.info(f"[{tag}] All slots on {day} exhausted")
-            time.sleep(1)
+            time.sleep(random.uniform(0.5, 2.5))
 
         # ── Inter-cycle sleep ─────────────────────────────────────────────────
+        base = target.poll_interval
+        jittered = random.uniform(base * 0.75, base * 1.25)
         if target.drop_sniper:
             remaining = _secs_to_poll_close(datetime.now(EASTERN))
             if remaining <= 0:
                 continue  # noon passed; outer loop handles the long sleep
-            sleep_secs = min(target.poll_interval, remaining)
+            sleep_secs = min(jittered, remaining)
             log.info(f"[{tag}] Cycle complete — sleeping {sleep_secs:.0f}s")
             time.sleep(sleep_secs)
         else:
-            log.info(f"[{tag}] Cycle complete — sleeping {target.poll_interval}s")
-            time.sleep(target.poll_interval)
+            log.info(f"[{tag}] Cycle complete — sleeping {jittered:.0f}s")
+            time.sleep(jittered)
 
 
 # ── Thread wrapper ────────────────────────────────────────────────────────────
