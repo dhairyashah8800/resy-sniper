@@ -52,13 +52,21 @@ BASE_HEADERS = {
     "X-Resy-Auth-Token": AUTH_TOKEN,
     "X-Resy-Universal-Slot": "1",
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Origin": "https://resy.com",
-    "Referer": "https://resy.com/",
+    "Referer": "https://resy.com/cities/new-york-ny/venues/",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 FORM_HEADERS = {**BASE_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
 
@@ -94,6 +102,11 @@ def in_target_range(day_str: str) -> bool:
         return False
 
 
+# ── Custom exceptions ─────────────────────────────────────────────────────────
+class ServerError(Exception):
+    """Raised when Resy returns a 5xx response (not a rate-limit)."""
+
+
 # ── API calls ─────────────────────────────────────────────────────────────────
 def find_slots(day: str) -> Optional[list]:
     """Returns slot list, None on rate-limit, [] when nothing available."""
@@ -111,6 +124,8 @@ def find_slots(day: str) -> Optional[list]:
     )
     if resp.status_code == 429:
         return None
+    if resp.status_code >= 500:
+        raise ServerError(f"HTTP {resp.status_code}")
     resp.raise_for_status()
     data = resp.json()
     venues = data.get("results", {}).get("venues", [])
@@ -209,6 +224,10 @@ def main():
 
             try:
                 slots = find_slots(day)
+            except ServerError as exc:
+                log.warning(f"  Server error ({exc}) — sleeping 60s and retrying")
+                time.sleep(60)
+                continue
             except requests.RequestException as exc:
                 log.error(f"  Network error: {exc}")
                 backoff = min((backoff or 15) * 2, 300)
