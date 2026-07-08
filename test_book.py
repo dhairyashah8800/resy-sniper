@@ -3,19 +3,24 @@
 
 import json
 import logging
+import os
+import sys
 from datetime import datetime
 
 import requests
 
-API_KEY = "REDACTED_API_KEY"
-AUTH_TOKEN = (
-    "REDACTED_JWT"
-    "REDACTED_JWT"
-    "REDACTED_JWT"
-    "REDACTED_JWT"
-    "REDACTED_JWT"
-)
-PAYMENT_METHOD_ID = REDACTED_PAYMENT_ID
+
+def _require_env(name: str) -> str:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        print(f"FATAL: environment variable {name} is not set.", file=sys.stderr)
+        sys.exit(1)
+    return val
+
+
+API_KEY = _require_env("RESY_API_KEY")
+AUTH_TOKEN = _require_env("RESY_AUTH_TOKEN")
+PAYMENT_METHOD_ID = int(_require_env("RESY_PAYMENT_METHOD_ID"))
 
 # ── Test config ───────────────────────────────────────────────────────────────
 VENUE_ID = 75203

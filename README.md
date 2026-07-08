@@ -1,6 +1,6 @@
 # Resy Sniper
 
-Polls Resy every 60 seconds and instantly books the first available slot at your target venue within a defined date range. Sends a Telegram notification on success or crash.
+Polls the Resy API directly for open reservation slots at target venues and books the first one that matches your date/time criteria. Supports multiple venues running in parallel, each with independent date ranges and polling rules. Sends a Telegram notification on success or crash.
 
 ## Setup
 
@@ -13,9 +13,10 @@ Polls Resy every 60 seconds and instantly books the first available slot at your
 
 ### 2. Get your Resy credentials
 
-Both values come from your browser's DevTools while logged into resy.com:
+All three values come from your browser's DevTools while logged into resy.com:
 
-- **RESY_AUTH_TOKEN** — open DevTools → Network tab → make any request → find `X-Resy-Auth-Token` request header
+- **RESY_API_KEY** — Network tab → any Resy API request → `Authorization` request header, the `api_key="..."` portion
+- **RESY_AUTH_TOKEN** — Network tab → any request → `X-Resy-Auth-Token` request header
 - **RESY_PAYMENT_METHOD_ID** — found in the `/3/details` API response under `user.payment_methods[0].id`
 
 ### 3. Configure environment variables
@@ -41,6 +42,7 @@ python resy_sniper.py
 2. Choose **Deploy from GitHub repo** and connect your repository
 3. Once linked, go to your service → **Variables** tab
 4. Add each variable from `.env.example` with your real values:
+   - `RESY_API_KEY`
    - `RESY_AUTH_TOKEN`
    - `RESY_PAYMENT_METHOD_ID`
    - `TELEGRAM_BOT_TOKEN`
@@ -53,7 +55,7 @@ npm install -g @railway/cli
 railway login
 railway init
 railway up
-railway variables set RESY_AUTH_TOKEN=... RESY_PAYMENT_METHOD_ID=... TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
+railway variables set RESY_API_KEY=... RESY_AUTH_TOKEN=... RESY_PAYMENT_METHOD_ID=... TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
 ```
 
 ### 5. Monitor logs on Railway
@@ -61,18 +63,25 @@ railway variables set RESY_AUTH_TOKEN=... RESY_PAYMENT_METHOD_ID=... TELEGRAM_BO
 - Dashboard → your project → **Deployments** tab → click the active deployment → **Logs**
 - Or via CLI: `railway logs`
 
-The sniper logs every poll attempt with a timestamp. When it books, it prints `BOOKED [OK]` and sends a Telegram message, then exits (Railway will not restart it since exit code is 0).
+Each venue runs in its own daemon thread and logs every poll attempt with a timestamp. When a venue books successfully, it prints `BOOKED [OK]`, sends a Telegram message, and that thread exits. The process as a whole exits (code 0) once all threads finish, so Railway won't restart it.
 
 ## Target config
 
-Hardcoded in `resy_sniper.py`:
+Targets are defined as `VenueTarget` entries in `resy_sniper.py` — edit that file directly to change venues, dates, or polling behavior.
 
-| Setting | Value |
-|---|---|
-| Venue ID | 94741 |
-| Dates | 2026-05-14 to 2026-05-24 |
-| Party size | 4 |
-| Time window | 17:00 to closing |
-| Poll interval | 60 seconds |
+| Setting | Ambassadors Clubhouse | Bungalow |
+|---|---|---|
+| Venue ID | 94741 | 80201 |
+| Dates | 2026-05-14 to 2026-05-24 | 2026-05-14 to 2026-05-20 (skips Tuesdays) |
+| Party size | 4 | 4 |
+| Time window | 17:00+ | any time |
+| Poll interval | 60s | 60s, switches to 2s "drop sniper" mode 10:59:50–11:02:50 ET daily |
 
-A hard date guard prevents any booking outside the allowed range, even if the Resy API returns unexpected results.
+A hard date guard on every target prevents booking outside its allowed date range, even if the Resy API returns unexpected results. Bungalow additionally stops polling at noon ET each day and resumes the next morning.
+
+`test_book.py` is a standalone one-shot script for manually testing the find → details → book flow against a single venue/date, useful for verifying credentials or debugging API changes outside the main polling loop.
+
+## Notes
+
+- This tool calls Resy's internal API directly (not the public site) using credentials pulled from an authenticated browser session. This is unofficial and likely outside Resy's Terms of Service — use at your own risk, and expect it to break if Resy changes their API or rate-limits/flags automated traffic.
+- All credentials (`RESY_API_KEY`, `RESY_AUTH_TOKEN`, `RESY_PAYMENT_METHOD_ID`, Telegram tokens) are read from environment variables — never commit real values to `.env` or source files.

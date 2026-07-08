@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo
 import requests
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-API_KEY = "REDACTED_API_KEY"
 BASE_URL = "https://api.resy.com"
 TELEGRAM_API = "https://api.telegram.org"
 EASTERN = ZoneInfo("America/New_York")
@@ -34,6 +33,7 @@ def _require_env(name: str) -> str:
         sys.exit(1)
     return val
 
+API_KEY = _require_env("RESY_API_KEY")
 AUTH_TOKEN = _require_env("RESY_AUTH_TOKEN")
 PAYMENT_METHOD_ID = int(_require_env("RESY_PAYMENT_METHOD_ID"))
 TELEGRAM_BOT_TOKEN = _require_env("TELEGRAM_BOT_TOKEN")
